@@ -3,3 +3,16 @@ supported by the rump kernel. A single rump kernel is in use for any
 number of <rump> nodes. The configuration node takes two arguments:
 'fs' specifies the file system type, and 'writeable' specifies if the
 mount is read only or writeable, 'writeable' defaults to true.
+
+Furthermore, the Rump kernel quota may be defined with the top-level
+config node 'rump' and the attribute 'quota', and affects things such
+as cache sizes within Rump. If ommited, a default is set to the
+remaining quota of the host component minus 2 MB.
+
+An example configuration:
+! <config>
+!  <rump quota="8M"/>
+!  <vfs>
+!   <rump fs="ext2fs"/>
+!  </vfs>
+! </config>

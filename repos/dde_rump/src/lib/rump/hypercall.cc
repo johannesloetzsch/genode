@@ -17,13 +17,17 @@
 #include <base/env.h>
 #include <base/printf.h>
 #include <base/sleep.h>
+#include <os/config.h>
 #include <os/timed_semaphore.h>
 #include <util/allocator_fap.h>
 #include <util/random.h>
 #include <util/string.h>
 
 extern "C" void wait_for_continue();
-enum { SUPPORTED_RUMP_VERSION = 17 };
+enum {
+	SUPPORTED_RUMP_VERSION = 17,
+	RESERVE_MEM = 2U * 1024 * 1024
+};
 
 static bool verbose = false;
 
@@ -37,10 +41,9 @@ struct rumpuser_hyperup _rump_upcalls;
 
 int rumpuser_init(int version, const struct rumpuser_hyperup *hyp)
 {
-	PDBG("RUMP ver: %d", version);
+	PLOG("init Rump hypercall interface version %d", version);
 	if (version != SUPPORTED_RUMP_VERSION) {
-		PERR("Unsupported rump-kernel version (%d) - supported is %d)",
-		     version, SUPPORTED_RUMP_VERSION);
+		PERR("only version is %d supported!", SUPPORTED_RUMP_VERSION);
 		return -1;
 	}
 
@@ -128,49 +131,6 @@ int errno;
 void rumpuser_seterrno(int e) { errno = e; }
 
 
-/*************************
- ** Parameter retrieval **
- *************************/
-
-int rumpuser_getparam(const char *name, void *buf, size_t buflen)
-{
-	enum { RESERVE_MEM = 2U * 1024 * 1024 };
-
-	/* support one cpu */
-	PDBG("%s", name);
-	if (!Genode::strcmp(name, "_RUMPUSER_NCPU")) {
-		Genode::strncpy((char *)buf, "1", 2);
-		return 0;
-	}
-
-	/* return out cool host name */
-	if (!Genode::strcmp(name, "_RUMPUSER_HOSTNAME")) {
-		Genode::strncpy((char *)buf, "rump4genode", 12);
-		return 0;
-	}
-
-	if (!Genode::strcmp(name, "RUMP_MEMLIMIT")) {
-
-		/* leave 2 MB for the Genode */
-		size_t rump_ram =  Genode::env()->ram_session()->avail();
-
-		if (rump_ram <= RESERVE_MEM) {
-			PERR("Insufficient quota need left: %zu < %u bytes", rump_ram, RESERVE_MEM);
-			return -1;
-		}
-
-		rump_ram -= RESERVE_MEM;
-
-		/* convert to string */
-		Genode::snprintf((char *)buf, buflen, "%zu", rump_ram);
-		PERR("Asserting rump kernel %zu KB of RAM", rump_ram / 1024);
-		return 0;
-	}
-
-	return -1;
-}
-
-
 /*************
  ** Console **
  *************/
@@ -202,43 +162,100 @@ void rumpuser_putchar(int ch)
  ** Memory **
  ************/
 
-struct Allocator_policy
+class Rump_alloc
 {
-	static int block()
-	{
-		int nlocks;
+	private:
 
-		if (myself() != main_thread())
-			rumpkern_unsched(&nlocks, 0);
-		return nlocks;
-	}
+		enum { MAX_VM_SIZE = 64 * 1024 * 1024 };
 
-	static void unblock(int nlocks)
-	{
-		if (myself() != main_thread())
-			rumpkern_sched(nlocks, 0);
-	}
+		struct Allocator_policy
+		{
+			static int block()
+			{
+				int nlocks;
+
+				if (myself() != main_thread())
+					rumpkern_unsched(&nlocks, 0);
+				return nlocks;
+			}
+
+			static void unblock(int nlocks)
+			{
+				if (myself() != main_thread())
+					rumpkern_sched(nlocks, 0);
+			}
+		};
+
+		Allocator::Backend_alloc<MAX_VM_SIZE, Allocator_policy> _alloc;
+
+		size_t        _remaining;
+		rumpuser_mtx *_mtx;
+
+	public:
+
+		Rump_alloc(Genode::Cache_attribute cached)
+		: _alloc(cached)
+		{
+			using namespace Genode;
+
+			try {
+				Genode::Number_of_bytes ram_bytes = 0;
+				Xml_node node = config()->xml_node().sub_node("rump");
+				node.attribute("quota").value(&ram_bytes);
+				_remaining = ram_bytes;
+			} catch (...) {
+				_remaining = 0;
+			}
+			if (!_remaining)
+				_remaining = env()->ram_session()->quota() - RESERVE_MEM;
+			if (_remaining > MAX_VM_SIZE)
+				_remaining = MAX_VM_SIZE;
+			PLOG("Rump allocator constrained to %lu KB", _remaining / 1024);
+
+			rumpuser_mutex_init(&_mtx, 0);
+		}
+
+		~Rump_alloc() { rumpuser_mutex_destroy(_mtx); }
+
+		void *alloc(size_t size, int align = 0)
+		{
+			void *addr = 0;
+			rumpuser_mutex_enter(_mtx);
+
+			if (size > _remaining) {
+				PERR("Rump quota reached");
+			} else {
+				addr = _alloc.alloc_aligned(size, align);
+				if (addr)
+					_remaining -= size;
+			}
+
+			rumpuser_mutex_exit(_mtx);
+			return addr;
+		}
+
+		void free(void *addr, size_t size)
+		{
+			rumpuser_mutex_enter(_mtx);
+			_alloc.free(addr, size);
+			_remaining += size;
+			rumpuser_mutex_exit(_mtx);
+		}
+
+		Genode::addr_t phys_addr(void *addr) const {
+			return _alloc.phys_addr((Genode::addr_t)addr); }
+
+		Genode::size_t avail() const { return _remaining; }
 };
-
-
-typedef Allocator::Fap<128 * 1024 * 1024, Allocator_policy> Rump_alloc;
-
-static Genode::Lock & alloc_lock()
-{
-	static Genode::Lock inst;
-	return inst;
-}
 
 static Rump_alloc* allocator()
 {
-	static Rump_alloc _fap(true);
-	return &_fap;
+	static Rump_alloc _alloc(Genode::CACHED);
+	return &_alloc;
 }
 
 int rumpuser_malloc(size_t len, int alignment, void **memp)
 {
-	Genode::Lock::Guard guard(alloc_lock());
-
 	int align = alignment ? Genode::log2(alignment) : 0;
 	*memp     = allocator()->alloc(len, align);
 
@@ -252,8 +269,6 @@ int rumpuser_malloc(size_t len, int alignment, void **memp)
 
 void rumpuser_free(void *mem, size_t len)
 {
-	Genode::Lock::Guard guard(alloc_lock());
-
 	allocator()->free(mem, len);
 
 	if (verbose)
@@ -306,6 +321,51 @@ int rumpuser_clock_sleep(int enum_rumpclock, int64_t sec, long nsec)
 int rumpuser_getrandom(void *buf, size_t buflen, int flags, size_t *retp)
 {
 	return rumpuser_getrandom_backend(buf, buflen, flags, retp);
+}
+
+
+/*************************
+ ** Parameter retrieval **
+ *************************/
+
+int rumpuser_getparam(const char *name, void *buf, size_t buflen)
+{
+	/* support one cpu */
+	if (!Genode::strcmp(name, "_RUMPUSER_NCPU")) {
+		Genode::strncpy((char *)buf, "1", 2);
+		return 0;
+	}
+
+	/* return out cool host name */
+	if (!Genode::strcmp(name, "_RUMPUSER_HOSTNAME")) {
+		Genode::strncpy((char *)buf, "rump4genode", 12);
+		return 0;
+	}
+
+	if (!Genode::strcmp(name, "RUMP_MEMLIMIT")) {
+		size_t rump_ram = allocator()->avail();
+		/* convert to string */
+		Genode::snprintf((char *)buf, buflen, "%zu", rump_ram);
+		PLOG("Asserting rump kernel %zu KB of RAM", rump_ram / 1024);
+		return 0;
+	}
+
+	if (!Genode::strcmp(name, "RUMP_VERBOSE")) {
+		bool verbose = false;
+		try {
+			Genode::Xml_node rump_node =
+				Genode::config()->xml_node().sub_node("rump");
+			verbose = rump_node.attribute("verbose").value(&verbose);
+		} catch (...) { }
+		if (verbose)
+			Genode::strncpy((char *)buf, "1", 2);
+		else
+			Genode::strncpy((char *)buf, "0", 2);
+		return 0;
+	}
+
+	PWRN("unhandled rumpuser parameter %s", name);
+	return -1;
 }
 
 

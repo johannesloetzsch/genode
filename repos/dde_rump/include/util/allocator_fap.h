@@ -21,12 +21,6 @@
 
 
 namespace Allocator {
-	template <unsigned VM_SIZE, typename POLICY> class Backend_alloc;
-	template <unsigned VM_SIZE, typename POLICY> class Fap;
-}
-
-
-namespace Allocator {
 
 	using namespace Genode;
 
@@ -162,7 +156,7 @@ namespace Allocator {
 			/**
 			 * Return phys address for given virtual addr.
 			 */
-			addr_t phys_addr(addr_t addr)
+			addr_t phys_addr(addr_t addr) const
 			{
 				if (addr < _base || addr >= (_base + VM_SIZE))
 					return ~0UL;
@@ -183,43 +177,6 @@ namespace Allocator {
 			bool inside(addr_t addr) const { return (addr >= _base) && (addr < (_base + VM_SIZE)); }
 	};
 
-
-	/**
-	 * Interface
-	 */
-	template <unsigned VM_SIZE, typename POLICY = Default_allocator_policy>
-	class Fap
-	{
-		private:
-
-			typedef Allocator::Backend_alloc<VM_SIZE, POLICY> Backend_alloc;
-
-			Backend_alloc  _back_allocator;
-
-			Genode::Lock _lock;
-
-		public:
-
-			Fap(bool cached)
-			: _back_allocator(cached ? CACHED : UNCACHED) { }
-
-			void *alloc(size_t size, int align = 0)
-			{
-				Genode::Lock::Guard guard(_lock);
-				return _back_allocator.alloc_aligned(size, align);
-			}
-
-			void free(void *addr, size_t size)
-			{
-				Genode::Lock::Guard guard(_lock);
-				_back_allocator.free(addr, size);
-			}
-
-			addr_t phys_addr(void *addr)
-			{
-				return _back_allocator.phys_addr((addr_t)addr);
-			}
-	};
 } /* namespace Allocator */
 
 #endif /* _INCLUDE__UTIL__ALLOCATOR_FAP_H_ */
