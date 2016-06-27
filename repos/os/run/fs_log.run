@@ -37,7 +37,9 @@ set config {
 				<log name="bomb-master.log"/>
 				<dir name="bomb-master"> <log name="bomb_g5.log"/> </dir>
 			</vfs>
-			<policy label="fs_log" writeable="yes"/>
+			<file_system>
+				<policy label="fs_log" writeable="yes"/>
+			</file_system>
 		</config>
 	</start>
 	<start name="fs_log">
