@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {} }: with pkgs;
+{ pkgs ? import <nixpkgs> {}, ... }: with pkgs;
 
 stdenv.mkDerivation {
   name = "genode-dev-env";
@@ -12,7 +12,7 @@ stdenv.mkDerivation {
       subversionClient flex bison
 
       # virtualbox
-      yasm libxslt iasl
+      yasm libxslt acpica-tools
 
       # qt5
       gperf
@@ -21,10 +21,11 @@ stdenv.mkDerivation {
       mawk
 
       # fb_sdl
-      pkgconfig
+      pkg-config
       SDL.dev
-      alsaLib.dev
+      alsa-lib.dev
     ];
+  dontUnpack = true;
 
   shellHook =
     ''

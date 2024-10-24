@@ -2,7 +2,7 @@
 
 let
   genodeVersion = "16.05";
-  glibcVersion = (builtins.parseDrvName stdenv.glibc.name).version;
+  glibcVersion = (builtins.parseDrvName pkgs.glibc.name).version;
 
 in
 stdenv.mkDerivation rec {
@@ -52,7 +52,7 @@ stdenv.mkDerivation rec {
   '';
 
   fixupPhase = ''
-    interp=${stdenv.glibc.out}/lib/ld-${glibcVersion}.so
+    interp=${pkgs.glibc.out}/lib/ld-linux-x86-64.so.2
     if [ ! -f "$interp" ] ; then
        echo new interpreter $interp does not exist,
        echo cannot patch binaries
@@ -62,11 +62,11 @@ stdenv.mkDerivation rec {
     for f in $(find $out); do
         if [ -f "$f" ] && patchelf "$f" 2> /dev/null; then
             patchelf --set-interpreter $interp \
-                     --set-rpath $out/lib:${stdenv.glibc.out}/lib:${zlib.out}/lib \
+                     --set-rpath $out/lib:${pkgs.glibc.out}/lib:${zlib.out}/lib \
                 "$f" || true
         fi
     done
   '';
 
-  passthru = { libc = stdenv.glibc; };
+  passthru = { libc = pkgs.glibc; };
 }
